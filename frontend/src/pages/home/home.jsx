@@ -7,12 +7,98 @@ function Home() {
   const [sourceLang, setSourceLang] = useState('ko')
   const [targetLang, setTargetLang] = useState('en')
   const [isTranslating, setIsTranslating] = useState(false)
+  const [grammarErrors, setGrammarErrors] = useState([])
+  const [isCheckingGrammar, setIsCheckingGrammar] = useState(false)
+  const translateTimeoutRef = useRef(null)
+  const grammarTimeoutRef = useRef(null)
 
   const languages = [
     { code: 'ko', name: 'Korean' },
     { code: 'en', name: 'English' },
     { code: 'zh', name: 'Chinese (Simplified)' },
   ]
+
+  // 영어 문법/철자 검사 함수
+  const checkGrammar = async (text) => {
+    if (!text || !text.trim()) {
+      setGrammarErrors([])
+      return
+    }
+    
+    // 영어가 아니면 검사하지 않음
+    const englishMatches = text.match(/[A-Za-z]/g)
+    if (!englishMatches || englishMatches.length < 3) {
+      setGrammarErrors([])
+      return
+    }
+    
+    setIsCheckingGrammar(true)
+    
+    try {
+      // LanguageTool API 사용
+      const response = await fetch('https://api.languagetool.org/v2/check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          text: text,
+          language: 'en-US',
+        }),
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log('Grammar check response:', data)
+        if (data.matches && data.matches.length > 0) {
+          const errors = data.matches.map(match => ({
+            message: match.message,
+            context: match.context?.text || '',
+            offset: match.offset,
+            length: match.length,
+            replacements: match.replacements ? match.replacements.slice(0, 3).map(r => r.value) : [],
+            ruleId: match.rule?.id || '',
+            category: match.rule?.category?.name || '',
+          }))
+          console.log('Grammar errors found:', errors)
+          setGrammarErrors(errors)
+        } else {
+          console.log('No grammar errors found')
+          setGrammarErrors([])
+        }
+      } else {
+        console.log('Grammar API response not ok:', response.status)
+      }
+    } catch (error) {
+      console.error('Grammar check error:', error)
+      setGrammarErrors([])
+    } finally {
+      setIsCheckingGrammar(false)
+    }
+  }
+
+  // 언어 탐지 함수
+  const detectLanguage = (text) => {
+    if (!text || !text.trim()) return null
+    
+    const trimmedText = text.trim()
+    
+    // 각 언어의 문자 개수 계산
+    const koreanMatches = trimmedText.match(/[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g)
+    const chineseMatches = trimmedText.match(/[\u4E00-\u9FFF]/g)
+    const englishMatches = trimmedText.match(/[A-Za-z]/g)
+    
+    const koreanCount = koreanMatches ? koreanMatches.length : 0
+    const chineseCount = chineseMatches ? chineseMatches.length : 0
+    const englishCount = englishMatches ? englishMatches.length : 0
+    
+    // 우선순위: 한글 > 중국어 > 영어
+    if (koreanCount > 0) return 'ko'
+    if (chineseCount > 0) return 'zh'
+    if (englishCount > 0) return 'en'
+    
+    return null
+  }
 
   const handleTranslate = async () => {
     if (!inputText.trim()) {
@@ -22,107 +108,73 @@ function Home() {
     setIsTranslating(true)
     
     try {
-      // Language code mapping for MyMemory API
-      const langMap = {
-        'ko': 'ko',
-        'en': 'en',
-        'zh': 'zh'
-      }
-      
-      const sourceCode = langMap[sourceLang] || sourceLang
-      const targetCode = langMap[targetLang] || targetLang
+      const sourceCode = sourceLang
+      const targetCode = targetLang
       
       if (sourceLang === targetLang) {
-        // Same language - return input as is
         setOutputText(inputText)
         setIsTranslating(false)
         return
       }
       
-      // Use multiple translation APIs for better quality
       let translatedText = ''
+      const timeout = 3000 // 3초 타임아웃
       
-      // Try Google Translate via CORS proxy
+      // 1. 직접 Google Translate API 시도 (가장 빠름)
       try {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), timeout)
         const googleUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceCode}&tl=${targetCode}&dt=t&q=${encodeURIComponent(inputText)}`
-        // Using CORS proxy to bypass CORS restrictions
-        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(googleUrl)}`
+        const response = await fetch(googleUrl, { signal: controller.signal })
+        clearTimeout(timeoutId)
         
-        const googleResponse = await fetch(proxyUrl)
-        
-        if (googleResponse.ok) {
-          const proxyData = await googleResponse.json()
-          if (proxyData && proxyData.contents) {
-            try {
-              const googleData = JSON.parse(proxyData.contents)
-              if (googleData && Array.isArray(googleData) && googleData[0] && Array.isArray(googleData[0])) {
-                // Extract translated text from Google's response format
-                translatedText = googleData[0]
-                  .filter((item) => item && Array.isArray(item) && item[0] && typeof item[0] === 'string')
-                  .map((item) => item[0])
-                  .join('')
-                  .trim()
-              }
-            } catch (parseError) {
-              console.log('Failed to parse Google Translate response:', parseError)
-            }
+        if (response.ok) {
+          const googleData = await response.json()
+          if (googleData?.[0] && Array.isArray(googleData[0])) {
+            translatedText = googleData[0]
+              .filter(item => item && Array.isArray(item) && item[0] && typeof item[0] === 'string')
+              .map(item => item[0])
+              .join('')
+              .trim()
           }
         }
-      } catch (googleError) {
-        console.log('Google Translate failed, trying MyMemory...', googleError)
+      } catch (e) {
+        console.log('Direct Google Translate failed')
       }
       
-      // Fallback to MyMemory if Google Translate fails
+      // 2. MyMemory API 시도 (빠른 fallback)
       if (!translatedText) {
-        const response = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(inputText)}&langpair=${sourceCode}|${targetCode}`
-        )
-        
-        if (!response.ok) {
-          throw new Error('Translation API error')
-        }
-        
-        const data = await response.json()
-        
-        if (data.responseStatus === 200 && data.responseData && data.responseData.translatedText) {
-          // Clean up translation result - remove unwanted tags/prefixes
-          translatedText = data.responseData.translatedText
-          // Remove common unwanted prefixes like "t0/", "t1/", etc.
-          translatedText = translatedText.replace(/^t\d+\//, '')
-          // Remove HTML tags if any
-          translatedText = translatedText.replace(/<[^>]*>/g, '')
-          // Trim whitespace
-          translatedText = translatedText.trim()
-        } else {
-          throw new Error('Translation failed')
+        try {
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), timeout)
+          const response = await fetch(
+            `https://api.mymemory.translated.net/get?q=${encodeURIComponent(inputText)}&langpair=${sourceCode}|${targetCode}`,
+            { signal: controller.signal }
+          )
+          clearTimeout(timeoutId)
+          
+          if (response.ok) {
+            const data = await response.json()
+            if (data.responseStatus === 200 && data.responseData?.translatedText) {
+              translatedText = data.responseData.translatedText
+                .replace(/^t\d+\//, '')
+                .replace(/<[^>]*>/g, '')
+                .trim()
+            }
+          }
+        } catch (e) {
+          console.log('MyMemory failed')
         }
       }
       
       if (translatedText) {
         setOutputText(translatedText)
       } else {
-        throw new Error('Translation failed')
+        setOutputText('Translation failed. Please try again.')
       }
     } catch (error) {
       console.error('Translation error:', error)
-      // Fallback: Simple mock translation
-      let translatedText = ''
-      if (sourceLang === 'ko' && targetLang === 'en') {
-        translatedText = 'I feel good.'
-      } else if (sourceLang === 'en' && targetLang === 'ko') {
-        translatedText = '기분이 좋습니다.'
-      } else if (sourceLang === 'ko' && targetLang === 'zh') {
-        translatedText = '我感觉很好。'
-      } else if (sourceLang === 'zh' && targetLang === 'ko') {
-        translatedText = '기분이 좋습니다.'
-      } else if (sourceLang === 'en' && targetLang === 'zh') {
-        translatedText = '我感觉很好。'
-      } else if (sourceLang === 'zh' && targetLang === 'en') {
-        translatedText = 'I feel good.'
-      } else {
-        translatedText = inputText
-      }
-      setOutputText(translatedText)
+      setOutputText('Translation failed. Please try again.')
     } finally {
       setIsTranslating(false)
     }
@@ -138,6 +190,48 @@ function Home() {
   // 이전 언어 값을 저장
   const prevSourceLangRef = useRef(sourceLang)
   const prevTargetLangRef = useRef(targetLang)
+
+  // source와 target이 같아지면 target을 자동으로 변경
+  useEffect(() => {
+    if (sourceLang === targetLang) {
+      const otherLang = languages.find(l => l.code !== sourceLang)
+      if (otherLang) setTargetLang(otherLang.code)
+    }
+  }, [sourceLang, targetLang])
+
+  // inputText 변경 시 자동 번역 및 문법 검사
+  useEffect(() => {
+    // 실시간 자동 번역 (debounce)
+    if (translateTimeoutRef.current) {
+      clearTimeout(translateTimeoutRef.current)
+    }
+    if (inputText && inputText.trim()) {
+      translateTimeoutRef.current = setTimeout(() => {
+        handleTranslate()
+      }, 500)
+    } else {
+      setOutputText('')
+    }
+
+    // 영어 입력 시 문법/철자 검사 (debounce)
+    if (grammarTimeoutRef.current) {
+      clearTimeout(grammarTimeoutRef.current)
+    }
+    const detectedLang = detectLanguage(inputText)
+    if (detectedLang === 'en' && inputText && inputText.trim()) {
+      grammarTimeoutRef.current = setTimeout(() => {
+        checkGrammar(inputText)
+      }, 800)
+    } else {
+      setGrammarErrors([])
+    }
+
+    return () => {
+      if (translateTimeoutRef.current) clearTimeout(translateTimeoutRef.current)
+      if (grammarTimeoutRef.current) clearTimeout(grammarTimeoutRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputText])
 
   // 언어 변경 시 입력/출력 텍스트 자동 교체 및 번역
   useEffect(() => {
@@ -307,7 +401,15 @@ function Home() {
           <div className="language-selector">
             <select
               value={sourceLang}
-              onChange={(e) => setSourceLang(e.target.value)}
+              onChange={(e) => {
+                const newSourceLang = e.target.value
+                setSourceLang(newSourceLang)
+                // source와 target이 같아지면 target을 다른 언어로 변경
+                if (newSourceLang === targetLang) {
+                  const otherLang = languages.find(l => l.code !== newSourceLang)
+                  if (otherLang) setTargetLang(otherLang.code)
+                }
+              }}
               className="lang-select"
             >
               {languages.map(lang => (
@@ -322,7 +424,8 @@ function Home() {
               onChange={(e) => setTargetLang(e.target.value)}
               className="lang-select"
             >
-              {languages.map(lang => (
+              {/* source 언어는 target 목록에서 제외 */}
+              {languages.filter(lang => lang.code !== sourceLang).map(lang => (
                 <option key={lang.code} value={lang.code}>{lang.name}</option>
               ))}
             </select>
@@ -331,19 +434,76 @@ function Home() {
           <div className="input-section">
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
-                  e.preventDefault()
-                  if (inputText.trim() && !isTranslating) {
-                    handleTranslate()
+              onChange={(e) => {
+                const newValue = e.target.value
+                setInputText(newValue)
+                
+                // 즉시 언어 감지 및 select box 변경
+                const detectedLang = detectLanguage(newValue)
+                if (newValue && newValue.trim()) {
+                  if (detectedLang === 'ko') {
+                    setSourceLang('ko')
+                    setTargetLang('en')
+                  } else if (detectedLang === 'en') {
+                    setSourceLang('en')
+                    setTargetLang('ko')
+                  } else if (detectedLang === 'zh') {
+                    setSourceLang('zh')
+                    setTargetLang('en')
                   }
                 }
               }}
-              placeholder="Enter text to translate... (Press Enter to translate, Ctrl+Enter for new line)"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
+                  e.preventDefault()
+                  // 자동 번역이 이미 실행되므로 별도 처리 불필요
+                }
+              }}
+              placeholder="Enter text to translate... (Auto-translates as you type)"
               className="input-textarea"
               rows={8}
             />
+            {/* 영어 문법/철자 오류 표시 */}
+            {grammarErrors.length > 0 && (
+              <div className="grammar-errors">
+                <div className="grammar-header">
+                  <span className="grammar-icon">⚠️</span>
+                  <span className="grammar-title">Grammar & Spelling Issues ({grammarErrors.length})</span>
+                </div>
+                <div className="grammar-list">
+                  {grammarErrors.map((error, index) => (
+                    <div key={index} className="grammar-item">
+                      <div className="grammar-message">{error.message}</div>
+                      {error.replacements.length > 0 && (
+                        <div className="grammar-suggestions">
+                          <span className="suggestion-label">Suggestions:</span>
+                          {error.replacements.map((replacement, idx) => (
+                            <button
+                              key={idx}
+                              className="suggestion-btn"
+                              onClick={() => {
+                                // 오류 부분을 제안된 단어로 교체
+                                const before = inputText.substring(0, error.offset)
+                                const after = inputText.substring(error.offset + error.length)
+                                const newText = before + replacement + after
+                                setInputText(newText)
+                                // 문법 검사 다시 실행
+                                setTimeout(() => checkGrammar(newText), 100)
+                              }}
+                            >
+                              {replacement}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isCheckingGrammar && (
+              <div className="grammar-checking">Checking grammar...</div>
+            )}
           </div>
 
           <button
