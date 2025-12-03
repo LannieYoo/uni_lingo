@@ -48,3 +48,7 @@ ENV/
 
 # Whisper 모델 캐시 (선택사항)
 .whisper_cache/
+
+# Log files
+logs/*.log
+!logs/.gitkeep

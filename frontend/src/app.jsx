@@ -6,6 +6,7 @@ import TextToSpeech from './pages/text-to-speech/text-to-speech'
 import SpeechToText from './pages/speech-to-text/speech-to-text'
 import SpeechToRecording from './pages/speech-to-recording/speech-to-recording'
 import Translator from './pages/translator/translator'
+import Logs from './pages/logs/logs'
 
 function App() {
   return (
@@ -18,6 +19,7 @@ function App() {
           <Route path="/speech-to-text" element={<SpeechToText />} />
           <Route path="/speech-to-recording" element={<SpeechToRecording />} />
           <Route path="/translator" element={<Translator />} />
+          <Route path="/logs" element={<Logs />} />
         </Routes>
       </Layout>
     </Router>

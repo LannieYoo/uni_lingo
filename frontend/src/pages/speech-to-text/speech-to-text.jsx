@@ -72,7 +72,8 @@ function SpeechToText() {
       formData.append('language', selectedLanguage)
 
       // Whisper 로컬 서버로 전송
-      const response = await fetch('http://localhost:8001/api/whisper/transcribe', {
+      const apiUrl = import.meta.env.VITE_API_URL || '/api/whisper/transcribe'
+      const response = await fetch(apiUrl, {
         method: 'POST',
         body: formData,
       })
